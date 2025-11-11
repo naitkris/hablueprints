@@ -72,14 +72,14 @@ blueprint:
 
     notify_service:
       name: Notification service (optional)
-      description: "Example: notify.mobile_app_phone"
+      description: Example notify.mobile_app_phone
       default: ""
       selector:
         text:
 
     tts_service:
       name: TTS or media player service (optional)
-      description: "Example: tts.google_translate_say or media_player.living_room"
+      description: Example tts.google_translate_say or media_player.living_room
       default: ""
       selector:
         text:
