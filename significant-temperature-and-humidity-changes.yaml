@@ -5,12 +5,10 @@ blueprint:
 
     **Version: 1.0**
 
-
     Monitors all temperature and humidity sensors and triggers an alert when any
     of them changes significantly (increase or decrease) within a configurable
     time period. Useful for detecting sudden environmental changes, device
     malfunctions, open doors/windows, or to act as a heat alarm.
-
 
     You can also choose any temperature or humidity sensors that should be ignored
     by this automation.
