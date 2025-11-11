@@ -1,0 +1,175 @@
+blueprint:
+  name: Temperature and Humidity Change Actions 2
+  description: >
+    # ↕️ Temperature and Humidity Change Actions
+
+    **Version: 1.0**
+
+    Monitors all temperature and humidity sensors and triggers an alert when any
+    of them changes (increase or decrease) by a configurable amount within a
+    configurable time period. This is useful for detecting sudden environmental
+    changes, device malfunctions, open doors/windows, or to act as a heat alarm.
+
+    Each sensor is tracked individually so cooldown applies per entity.
+
+    Stores previous values automatically using helpers, so changes
+    persist across restarts.
+
+    You can also choose any temperature or humidity sensors that should be ignored
+    by this automation.
+  domain: automation
+
+  input:
+    monitor_temperature:
+      name: Monitor temperature sensors
+      default: true
+      selector:
+        boolean:
+
+    monitor_humidity:
+      name: Monitor humidity sensors
+      default: true
+      selector:
+        boolean:
+
+    time_window:
+      name: Time window (minutes)
+      description: Compare readings separated by this time interval.
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 240
+          unit_of_measurement: minutes
+
+    temp_threshold:
+      name: Temperature change threshold (°C)
+      default: 2.0
+      selector:
+        number:
+          min: 0.1
+          max: 10.0
+          step: 0.1
+          unit_of_measurement: °C
+
+    humidity_threshold:
+      name: Humidity change threshold (%)
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 50
+          step: 1
+          unit_of_measurement: "%"
+
+    ignore_entities:
+      name: Ignore sensors
+      description: Sensors to exclude from monitoring.
+      default: []
+      selector:
+        entity:
+          multiple: true
+
+    notify_service:
+      name: Notification service (optional)
+      description: Example: notify.mobile_app_phone
+      default: ""
+      selector:
+        text:
+
+    tts_service:
+      name: TTS or media player service (optional)
+      description: Example: tts.google_translate_say or media_player.living_room
+      default: ""
+      selector:
+        text:
+
+mode: queued
+max_exceeded: silent
+
+variables:
+  monitor_temperature: !input monitor_temperature
+  monitor_humidity: !input monitor_humidity
+  time_window: !input time_window
+  temp_threshold: !input temp_threshold
+  humidity_threshold: !input humidity_threshold
+  ignore_entities: !input ignore_entities
+  notify_service: !input notify_service
+  tts_service: !input tts_service
+
+trigger:
+  - platform: time_pattern
+    minutes: "/5"  # checks every 5 minutes (configurable if desired)
+
+action:
+  - variables:
+      changed: []
+
+  # Loop through all sensors
+  - repeat:
+      for_each: >
+        {{ expand(states('group.all_sensors')|default([])) 
+           if states('group.all_sensors') != 'unknown' else states }}
+      sequence:
+        - variables:
+            entity: "{{ repeat.item.entity_id }}"
+            name: "{{ repeat.item.name }}"
+            state: "{{ repeat.item.state | float(0) }}"
+            class: "{{ repeat.item.attributes.device_class | default('') }}"
+            is_temp: >
+              {{ monitor_temperature and (class == 'temperature' or 'temperature' in entity) }}
+            is_hum: >
+              {{ monitor_humidity and (class == 'humidity' or 'humidity' in entity) }}
+        - condition: template
+          value_template: >
+            {{ (is_temp or is_hum) and entity not in ignore_entities }}
+        - variables:
+            helper_id: "input_number.last_{{ entity|replace('.', '_') }}"
+        - choose:
+            # If helper doesn’t exist yet, create it dynamically
+            - conditions: >
+                {{ helper_id not in states }}
+              sequence:
+                - service: input_number.create
+                  data:
+                    name: "Last {{ name }}"
+                    min: -100
+                    max: 200
+                    step: 0.01
+                    initial: "{{ state }}"
+                    id: "{{ helper_id }}"
+        - variables:
+            previous: "{{ states(helper_id) | float(0) }}"
+            diff: "{{ state - previous }}"
+        - choose:
+            - conditions: >
+                {{ (is_temp and (diff | abs >= temp_threshold)) 
+                   or (is_hum and (diff | abs >= humidity_threshold)) }}
+              sequence:
+                - variables:
+                    change_msg: >
+                      {{ '⚠️ ' ~ name ~ ': ' ~ diff|round(1) ~ ('°C' if is_temp else '%') }}
+                - variables:
+                    changed: "{{ changed + [change_msg] }}"
+        - service: input_number.set_value
+          data:
+            entity_id: "{{ helper_id }}"
+            value: "{{ state }}"
+
+  - choose:
+      - conditions: "{{ changed | count > 0 }}"
+        sequence:
+          - variables:
+              message: >
+                Significant change detected in:
+                {{ changed | join(', ') }}
+          - if: "{{ notify_service != '' }}"
+            then:
+              - service: "{{ notify_service }}"
+                data:
+                  message: "{{ message }}"
+          - if: "{{ tts_service != '' }}"
+            then:
+              - service: "{{ tts_service }}"
+                data:
+                  message: "{{ message }}"
