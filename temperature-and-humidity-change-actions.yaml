@@ -44,7 +44,7 @@ blueprint:
       selector:
         number:
           min: 0.1
-          max: 20.0
+          max: 20
           step: 0.1
           unit_of_measurement: °C
 
@@ -60,82 +60,136 @@ blueprint:
 
     ignore_entities:
       name: Ignore sensors
-      description: Sensors to exclude from monitoring.
       default: []
       selector:
         entity:
           multiple: true
 
-    actions:
-      name: Actions
-      description: Actions to perform when a change is reached within the minutes specified.
+    notify_services:
+      name: Notification services
+      description: Select one or more services to send alerts to.
       default: []
       selector:
         action:
+          multiple: true
 
-mode: restart
+    language:
+      name: Notification language
+      description: Choose language for notifications.
+      default: en
+      selector:
+        select:
+          options:
+            - label: English
+              value: en
+            - label: Swedish
+              value: sv
+            - label: Polish
+              value: pl
+
+mode: queued
 max_exceeded: silent
 
-variables:
-  monitor_temperature: !input monitor_temperature
-  monitor_humidity: !input monitor_humidity
-  lookback_minutes: !input lookback_minutes
-  temp_threshold: !input temp_threshold
-  humidity_threshold: !input humidity_threshold
-  ignore_entities: !input ignore_entities
-
 trigger:
-  # Check every minute
   - platform: time_pattern
     minutes: "/1"
 
 action:
   - variables:
+      now_ts: "{{ as_timestamp(now()) }}"
       changes: []
 
   - repeat:
       for_each: >
-        {% set sensors = states.sensor
+        {{ states.sensor
           | selectattr('state','is_number')
           | rejectattr('entity_id','in', ignore_entities)
-          | list %}
-        {{ sensors }}
+          | list }}
       sequence:
         - variables:
             entity: "{{ repeat.item.entity_id }}"
             name: "{{ repeat.item.name }}"
             current: "{{ repeat.item.state | float(0) }}"
             device_class: "{{ repeat.item.attributes.device_class | default('') }}"
-            is_temp: >
-              {{ monitor_temperature and (device_class == 'temperature' or 'temperature' in entity) }}
-            is_hum: >
-              {{ monitor_humidity and (device_class == 'humidity' or 'humidity' in entity) }}
+            is_temp: "{{ monitor_temperature and (device_class=='temperature' or 'temperature' in entity) }}"
+            is_hum: "{{ monitor_humidity and (device_class=='humidity' or 'humidity' in entity) }}"
+
         - condition: template
           value_template: "{{ (is_temp or is_hum) and repeat.item.state not in ['unknown','unavailable'] }}"
 
+        # Helpers
         - variables:
-            past: >
-              {% set history = state_attr(entity, 'history') %}
-              {% set old_state = states(entity, now() - timedelta(minutes=lookback_minutes)) %}
-              {{ old_state.state | float(0) if old_state else current }}
-            diff: "{{ current - past }}"
+            num_helper: "input_number.prev_{{ entity|replace('.', '_') }}"
+            time_helper: "input_datetime.prev_{{ entity|replace('.', '_') }}_time"
+
+        # Auto-create helpers
+        - choose:
+            - conditions: "{{ num_helper not in states }}"
+              sequence:
+                - service: input_number.set_value
+                  data:
+                    entity_id: "{{ num_helper }}"
+                    value: "{{ current }}"
+                - service: homeassistant.update_entity
+                  target:
+                    entity_id: "{{ num_helper }}"
+            - conditions: "{{ time_helper not in states }}"
+              sequence:
+                - service: input_datetime.set_datetime
+                  data:
+                    entity_id: "{{ time_helper }}"
+                    timestamp: "{{ now_ts }}"
+                - service: homeassistant.update_entity
+                  target:
+                    entity_id: "{{ time_helper }}"
+
+        - variables:
+            prev_val: "{{ states(num_helper) | float(0) }}"
+            prev_time: "{{ as_timestamp(states(time_helper)) if states(time_helper) not in ['unknown','unavailable',None] else 0 }}"
+            minutes_since: "{{ (now_ts - prev_time)/60 if prev_time > 0 else lookback_minutes + 1 }}"
+            diff: "{{ current - prev_val }}"
+
         - choose:
             - conditions: >
-                {{ (is_temp and (diff | abs >= temp_threshold))
-                   or (is_hum and (diff | abs >= humidity_threshold)) }}
+                {{ minutes_since >= lookback_minutes and
+                  ((is_temp and (diff|abs >= temp_threshold)) or
+                   (is_hum and (diff|abs >= humidity_threshold))) }}
               sequence:
                 - variables:
+                    msg_en: "⚠️ {{ name }} changed by {{ diff|round(1) }}{{ '°C' if is_temp else '%' }} in last {{ minutes_since|int }} minutes"
+                    msg_sv: "⚠️ {{ name }} ändrades med {{ diff|round(1) }}{{ '°C' if is_temp else '%' }} under de senaste {{ minutes_since|int }} minuterna"
+                    msg_pl: "⚠️ {{ name }} zmienił się o {{ diff|round(1) }}{{ '°C' if is_temp else '%' }} w ciągu {{ minutes_since|int }} minut"
                     msg: >
-                      {{ '⚠️ ' ~ name ~ ' changed by ' ~ diff|round(1) ~ ('°C' if is_temp else '%') ~ ' in last ' ~ lookback_minutes ~ ' minutes' }}
+                      {% if language == 'sv' %}
+                        {{ msg_sv }}
+                      {% elif language == 'pl' %}
+                        {{ msg_pl }}
+                      {% else %}
+                        {{ msg_en }}
+                      {% endif %}
                 - variables:
                     changes: "{{ changes + [msg] }}"
 
+        # Update helpers
+        - service: input_number.set_value
+          data:
+            entity_id: "{{ num_helper }}"
+            value: "{{ current }}"
+        - service: input_datetime.set_datetime
+          data:
+            entity_id: "{{ time_helper }}"
+            timestamp: "{{ now_ts }}"
+
+  # Send notifications to all selected services
   - choose:
       - conditions: "{{ changes | count > 0 }}"
         sequence:
           - variables:
-              message: >
-                Significant temperature or humidity changes detected:
-                {{ '\n'.join(changes) }}
-          - choose: []
-            default: !input actions
+              message: "{{ '\n'.join(changes) }}"
+          - repeat:
+              for_each: !input notify_services
+              sequence:
+                - service: "{{ repeat.item.service }}"
+                  data:
+                    message: "{{ message }}"
+                    target: "{{ repeat.item.target if repeat.item.target is defined else none }}"
