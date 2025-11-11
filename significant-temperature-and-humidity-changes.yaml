@@ -60,7 +60,7 @@ blueprint:
       name: Time window (minutes)
       description: >
         How far back to look when comparing readings.
-      default: 5
+      default: 2
       selector:
         number:
           min: 1
