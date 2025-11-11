@@ -72,14 +72,14 @@ blueprint:
 
     notify_service:
       name: Notification service (optional)
-      description: Example: notify.mobile_app_phone
+      description: "Example: notify.mobile_app_phone"
       default: ""
       selector:
         text:
 
     tts_service:
       name: TTS or media player service (optional)
-      description: Example: tts.google_translate_say or media_player.living_room
+      description: "Example: tts.google_translate_say or media_player.living_room"
       default: ""
       selector:
         text:
@@ -99,17 +99,15 @@ variables:
 
 trigger:
   - platform: time_pattern
-    minutes: "/5"  # checks every 5 minutes (configurable if desired)
+    minutes: "/5"  # checks every 5 minutes (configurable)
 
 action:
   - variables:
       changed: []
 
-  # Loop through all sensors
   - repeat:
       for_each: >
-        {{ expand(states('group.all_sensors')|default([])) 
-           if states('group.all_sensors') != 'unknown' else states }}
+        {{ states | selectattr('domain', 'equalto', 'sensor') | list }}
       sequence:
         - variables:
             entity: "{{ repeat.item.entity_id }}"
@@ -120,15 +118,16 @@ action:
               {{ monitor_temperature and (class == 'temperature' or 'temperature' in entity) }}
             is_hum: >
               {{ monitor_humidity and (class == 'humidity' or 'humidity' in entity) }}
+
         - condition: template
           value_template: >
             {{ (is_temp or is_hum) and entity not in ignore_entities }}
+
         - variables:
             helper_id: "input_number.last_{{ entity|replace('.', '_') }}"
+
         - choose:
-            # If helper doesn’t exist yet, create it dynamically
-            - conditions: >
-                {{ helper_id not in states }}
+            - conditions: "{{ helper_id not in states }}"
               sequence:
                 - service: input_number.create
                   data:
@@ -138,9 +137,11 @@ action:
                     step: 0.01
                     initial: "{{ state }}"
                     id: "{{ helper_id }}"
+
         - variables:
             previous: "{{ states(helper_id) | float(0) }}"
             diff: "{{ state - previous }}"
+
         - choose:
             - conditions: >
                 {{ (is_temp and (diff | abs >= temp_threshold)) 
@@ -151,6 +152,7 @@ action:
                       {{ '⚠️ ' ~ name ~ ': ' ~ diff|round(1) ~ ('°C' if is_temp else '%') }}
                 - variables:
                     changed: "{{ changed + [change_msg] }}"
+
         - service: input_number.set_value
           data:
             entity_id: "{{ helper_id }}"
