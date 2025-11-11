@@ -1,0 +1,193 @@
+blueprint:
+  name: Temperature and Humidity Change Actions
+  description: >
+    # ↕️ Temperature and Humidity Change Actions
+
+    **Version: 1.0**
+
+    Monitors all temperature and humidity sensors and triggers an alert when any
+    of them changes (increase or decrease) by a configurable amount within a
+    configurable time period. This is useful for detecting sudden environmental
+    changes, device malfunctions, open doors/windows, or to act as a heat alarm.
+
+    Each sensor is tracked individually so cooldown applies per entity.
+
+    You can also choose any temperature or humidity sensors that should be ignored
+    by this automation.
+  domain: automation
+  input:
+    monitored_types:
+      name: Sensor types to monitor
+      description: Select whether to monitor temperature, humidity, or both.
+      default: ["temperature", "humidity"]
+      selector:
+        select:
+          options:
+            - temperature
+            - humidity
+          multiple: true
+
+    change_direction:
+      name: Change direction
+      description: >
+        Whether to alert for increases, decreases, or both.
+      default: both
+      selector:
+        select:
+          options:
+            - increase
+            - decrease
+            - both
+
+    temp_threshold:
+      name: Temperature change threshold (°C)
+      default: 2
+      selector:
+        number:
+          min: 0.1
+          max: 20
+          step: 0.1
+          unit_of_measurement: °C
+
+    humidity_threshold:
+      name: Humidity change threshold (%)
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 40
+          step: 1
+          unit_of_measurement: "%"
+
+    time_window:
+      name: Time window (minutes)
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 240
+          step: 1
+          unit_of_measurement: minutes
+
+    cooldown:
+      name: Minimum time between alerts (minutes)
+      default: 30
+      selector:
+        number:
+          min: 1
+          max: 360
+          step: 1
+          unit_of_measurement: minutes
+
+    ignore_entities:
+      name: Sensors to ignore
+      default: []
+      selector:
+        entity:
+          domain: sensor
+          multiple: true
+
+    notify_action:
+      name: Action to perform when triggered
+      description: >
+        What to do when a significant change is detected (send a notification,
+        play a sound on a speaker, etc.).
+      default: []
+      selector:
+        action: {}
+
+mode: restart
+max_exceeded: silent
+
+trigger:
+  - platform: state
+    entity_id: []
+    domain: sensor
+    device_class: temperature
+  - platform: state
+    entity_id: []
+    domain: sensor
+    device_class: humidity
+
+variables:
+  monitored_types: !input monitored_types
+  change_direction: !input change_direction
+  temp_threshold: !input temp_threshold
+  humidity_threshold: !input humidity_threshold
+  time_window: !input time_window
+  cooldown: !input cooldown
+  ignore_entities: !input ignore_entities
+
+condition:
+  - condition: template
+    value_template: "{{ trigger.entity_id not in ignore_entities }}"
+  - condition: template
+    value_template: >
+      {% set cls = state_attr(trigger.entity_id, 'device_class') %}
+      {{ cls in monitored_types }}
+
+action:
+  - variables:
+      entity_id: "{{ trigger.entity_id }}"
+      device_class: "{{ state_attr(entity_id, 'device_class') }}"
+      now_val: "{{ states(entity_id) | float(0) }}"
+      old_val: "{{ trigger.from_state.state | float(0) }}"
+      diff: "{{ now_val - old_val }}"
+      abs_diff: "{{ (now_val - old_val) | abs }}"
+      threshold: >
+        {% if device_class == 'temperature' %}
+          {{ temp_threshold }}
+        {% elif device_class == 'humidity' %}
+          {{ humidity_threshold }}
+        {% else %}
+          {{ 9999 }}
+        {% endif %}
+      cooldown_key: "significant_change_{{ entity_id }}_last_time"
+
+  # -- Check if difference exceeds threshold --
+  - condition: template
+    value_template: >
+      {% if change_direction == 'increase' %}
+        {{ diff > threshold }}
+      {% elif change_direction == 'decrease' %}
+        {{ diff < (0 - threshold) }}
+      {% else %}
+        {{ abs_diff > threshold }}
+      {% endif %}
+
+  # -- Enforce per-entity cooldown using variable stored in input_text or memory --
+  - variables:
+      last_trigger: "{{ state_attr('automation.' ~ this.object_id, cooldown_key) | default(0) }}"
+      elapsed: "{{ (as_timestamp(now()) - last_trigger) / 60 if last_trigger != 0 else cooldown + 1 }}"
+  - condition: template
+    value_template: "{{ elapsed > cooldown }}"
+
+  # -- Store current time in the automation attribute for per-entity tracking --
+  - service: python_script.set_state
+    data:
+      entity_id: "automation.{{ this.object_id }}"
+      attributes:
+        "{{ cooldown_key }}": "{{ as_timestamp(now()) }}"
+
+  # -- Set descriptive variables for use in action --
+  - variables:
+      direction_text: >
+        {% if diff > 0 %}
+          increased
+        {% else %}
+          decreased
+        {% endif %}
+      amount: "{{ abs_diff | round(2) }}"
+      unit: >
+        {% if device_class == 'temperature' %}
+          °C
+        {% elif device_class == 'humidity' %}
+          %
+        {% else %}
+          ''
+        {% endif %}
+
+  # -- Run the user defined alert action --
+  - choose:
+      - conditions: []
+        sequence: !input notify_action
