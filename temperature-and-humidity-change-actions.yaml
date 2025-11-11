@@ -5,15 +5,12 @@ blueprint:
 
     **Version: 1.0**
 
-    Monitors all temperature and humidity sensors and triggers an alert when any
-    of them changes (increases or decreases) by a configurable amount within a
-    configurable time period. This is useful for detecting sudden environmental
-    changes, device malfunctions, opened doors/windows, or to act as a heat alarm.
-
-    Each sensor is tracked individually so cooldown applies per entity.
-
-    Stores previous values automatically using helpers, so changes
-    persist across restarts.
+    Monitors all temperature and humidity sensors and triggers an action when
+    any of them changes (increases or decreases) by a significant amount within
+    a configurable time period in minutes (amount changed and minutes are both
+    configurable). This is useful for detecting sudden environmental changes,
+    device malfunctions, when the temperature and/or humidity changes due to
+    opened doors/windows, to act as a heat alarm, etc.
 
     You can also choose any temperature or humidity sensors that should be ignored
     by this automation.
@@ -34,8 +31,6 @@ blueprint:
 
     lookback_minutes:
       name: Comparison lookback (minutes)
-      description: >
-        Compare the current value to this many minutes ago. Defines the time window for detecting significant changes.
       default: 5
       selector:
         number:
@@ -73,14 +68,12 @@ blueprint:
 
     actions:
       name: Actions
-      description: >
-        What to do when a significant temperature or humidity change is detected.
-        (e.g. send a notification, play sound, flash lights, run script, etc.)
+      description: Actions to perform when a change is reached within the minutes specified.
       default: []
       selector:
         action:
 
-mode: queued
+mode: restart
 max_exceeded: silent
 
 variables:
@@ -92,18 +85,21 @@ variables:
   ignore_entities: !input ignore_entities
 
 trigger:
-  # Run every minute to check for changes
+  # Check every minute
   - platform: time_pattern
     minutes: "/1"
 
 action:
   - variables:
-      now_ts: "{{ as_timestamp(now()) }}"
       changes: []
 
   - repeat:
       for_each: >
-        {{ states.sensor | list }}
+        {% set sensors = states.sensor
+          | selectattr('state','is_number')
+          | rejectattr('entity_id','in', ignore_entities)
+          | list %}
+        {{ sensors }}
       sequence:
         - variables:
             entity: "{{ repeat.item.entity_id }}"
@@ -115,68 +111,31 @@ action:
             is_hum: >
               {{ monitor_humidity and (device_class == 'humidity' or 'humidity' in entity) }}
         - condition: template
-          value_template: >
-            {{ (is_temp or is_hum) and entity not in ignore_entities and repeat.item.state not in ['unknown', 'unavailable'] }}
-
-        # Store previous reading using an input_number and input_datetime per entity
-        - variables:
-            num_helper: "input_number.prev_{{ entity|replace('.', '_') }}"
-            time_helper: "input_datetime.prev_{{ entity|replace('.', '_') }}"
-
-        # Create helpers if they don’t exist yet
-        - choose:
-            - conditions: "{{ num_helper not in states }}"
-              sequence:
-                - service: input_number.create
-                  data:
-                    name: "Previous {{ name }}"
-                    min: -100
-                    max: 200
-                    step: 0.01
-                    initial: "{{ current }}"
-                    id: "{{ num_helper }}"
-            - conditions: "{{ time_helper not in states }}"
-              sequence:
-                - service: input_datetime.create
-                  data:
-                    name: "Previous {{ name }} time"
-                    has_date: true
-                    has_time: true
-                    id: "{{ time_helper }}"
+          value_template: "{{ (is_temp or is_hum) and repeat.item.state not in ['unknown','unavailable'] }}"
 
         - variables:
-            prev_val: "{{ states(num_helper) | float(0) }}"
-            prev_time: "{{ as_timestamp(states(time_helper)) if states(time_helper) not in ['unknown', 'unavailable', None] else 0 }}"
-            minutes_since: "{{ (now_ts - prev_time) / 60 if prev_time > 0 else lookback_minutes + 1 }}"
-            diff: "{{ current - prev_val }}"
+            past: >
+              {% set history = state_attr(entity, 'history') %}
+              {% set old_state = states(entity, now() - timedelta(minutes=lookback_minutes)) %}
+              {{ old_state.state | float(0) if old_state else current }}
+            diff: "{{ current - past }}"
         - choose:
             - conditions: >
-                {{ minutes_since >= lookback_minutes and
-                   ((is_temp and (diff | abs >= temp_threshold))
-                    or (is_hum and (diff | abs >= humidity_threshold))) }}
+                {{ (is_temp and (diff | abs >= temp_threshold))
+                   or (is_hum and (diff | abs >= humidity_threshold)) }}
               sequence:
                 - variables:
                     msg: >
-                      {{ '⚠️ ' ~ name ~ ' changed by ' ~ diff|round(1) ~ ('°C' if is_temp else '%') ~ ' in ' ~ (minutes_since|int) ~ ' min' }}
+                      {{ '⚠️ ' ~ name ~ ' changed by ' ~ diff|round(1) ~ ('°C' if is_temp else '%') ~ ' in last ' ~ lookback_minutes ~ ' minutes' }}
                 - variables:
                     changes: "{{ changes + [msg] }}"
-
-        # Always update last known state
-        - service: input_number.set_value
-          data:
-            entity_id: "{{ num_helper }}"
-            value: "{{ current }}"
-        - service: input_datetime.set_datetime
-          data:
-            entity_id: "{{ time_helper }}"
-            timestamp: "{{ now_ts }}"
 
   - choose:
       - conditions: "{{ changes | count > 0 }}"
         sequence:
           - variables:
               message: >
-                Significant temperature or humidity change detected:
+                Significant temperature or humidity changes detected:
                 {{ '\n'.join(changes) }}
           - choose: []
             default: !input actions
