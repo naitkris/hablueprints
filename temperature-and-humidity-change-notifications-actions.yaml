@@ -65,24 +65,26 @@ blueprint:
         entity:
           multiple: true
 
-    notification_target:
-      name: Notification Target
-      description: Notify service to send the alert
+    notification_action:
+      name: Notification Action
+      description: Preconfigured notification to send when change is detected
+      default: []
+      selector:
+        action: {}
+
+    other_action:
+      name: Optional additional action
+      description: Optional extra Home Assistant action to perform
+      default: []
       selector:
         action: {}
 
     notification_message:
       name: Notification Message
+      description: Template for notification
       default: "⚠️ Significant changes detected:\n{{ changes | join('\n') }}"
       selector:
         text:
-
-    other_action:
-      name: Optional additional action
-      description: Optional Home Assistant action to perform when a change is detected.
-      default: []
-      selector:
-        action: {}
 
 mode: queued
 max_exceeded: silent
@@ -130,21 +132,27 @@ action:
         - variables:
             previous_values: "{{ previous_values | combine({entity: {'value': current, 'time': now_ts}}) }}"
 
-  # Send notification if changes detected
+  # Execute notification if changes detected
   - choose:
       - conditions: "{{ changes | count > 0 }}"
         sequence:
           - variables:
               message: "{{ notification_message }}"
-          - service: !input notification_target
-            data:
-              message: "{{ message }}"
-          # Optional additional actions
-          - choose:
-              - conditions: "{{ other_action | length > 0 }}"
-                sequence:
-                  - repeat:
-                      for_each: !input other_action
+          # Run the preconfigured notification action
+          - repeat:
+              for_each: !input notification_action
+              sequence:
+                - choose:
+                    - conditions: "true"
                       sequence:
                         - service: "{{ repeat.item.service }}"
-                          data: "{{ repeat.item.data if repeat.item.data is defined else {} }}"
+                          data: "{{ repeat.item.data | default({'message': message}) }}"
+          # Run optional additional actions
+          - repeat:
+              for_each: !input other_action
+              sequence:
+                - choose:
+                    - conditions: "true"
+                      sequence:
+                        - service: "{{ repeat.item.service }}"
+                          data: "{{ repeat.item.data | default({}) }}"
