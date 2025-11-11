@@ -65,6 +65,18 @@ blueprint:
         entity:
           multiple: true
 
+    notification_target:
+      name: Notification Target
+      description: Notify service to send the alert
+      selector:
+        action: {}
+
+    notification_message:
+      name: Notification Message
+      default: "⚠️ Significant changes detected:\n{{ changes | join('\n') }}"
+      selector:
+        text:
+
     other_action:
       name: Optional additional action
       description: Optional Home Assistant action to perform when a change is detected.
@@ -83,8 +95,8 @@ action:
   - variables:
       now_ts: "{{ as_timestamp(now()) }}"
       changes: []
+      previous_values: "{{ previous_values if previous_values is defined else {} }}"
 
-  # Loop through all sensors
   - repeat:
       for_each: >
         {{ states.sensor
@@ -99,9 +111,8 @@ action:
             device_class: "{{ repeat.item.attributes.device_class | default('') }}"
             is_temp: "{{ monitor_temperature and (device_class=='temperature' or 'temperature' in entity) }}"
             is_hum: "{{ monitor_humidity and (device_class=='humidity' or 'humidity' in entity) }}"
-            # Use previous state stored in automation's last_triggered
-            prev_val: "{{ state_attr(entity,'last_changed') and states(entity)|float(0) or current }}"
-            prev_time: "{{ as_timestamp(repeat.item.last_changed) if repeat.item.last_changed else now_ts }}"
+            prev_val: "{{ previous_values[entity]['value'] if entity in previous_values else current }}"
+            prev_time: "{{ previous_values[entity]['time'] if entity in previous_values else now_ts }}"
             minutes_since: "{{ (now_ts - prev_time)/60 }}"
             diff: "{{ current - prev_val }}"
 
@@ -112,17 +123,20 @@ action:
                and ((is_temp and diff|abs >= temp_threshold) or (is_hum and diff|abs >= humidity_threshold)) }}
 
         - variables:
-            msg: "⚠️ {{ name }} changed by {{ diff|round(1) }}{{ '°C' if is_temp else '%' }} in last {{ minutes_since|int }} minutes"
+            msg: "{{ name }} changed by {{ diff|round(1) }}{{ '°C' if is_temp else '%' }} in last {{ minutes_since|int }} minutes"
             changes: "{{ changes + [msg] }}"
 
-  # Send preconfigured notification if changes detected
+        # Update previous values
+        - variables:
+            previous_values: "{{ previous_values | combine({entity: {'value': current, 'time': now_ts}}) }}"
+
+  # Send notification if changes detected
   - choose:
       - conditions: "{{ changes | count > 0 }}"
         sequence:
           - variables:
-              message: "{{ '\n'.join(changes) }}"
-          # Preconfigured notification
-          - service: notify.mobile_app_yourdevice
+              message: "{{ notification_message }}"
+          - service: !input notification_target
             data:
               message: "{{ message }}"
           # Optional additional actions
