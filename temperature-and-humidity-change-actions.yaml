@@ -30,7 +30,7 @@ blueprint:
         boolean:
 
     lookback_minutes:
-      name: Comparison lookback (minutes)
+      name: Lookback (minutes)
       default: 5
       selector:
         number:
@@ -39,7 +39,7 @@ blueprint:
           unit_of_measurement: minutes
 
     temp_threshold:
-      name: Temperature change threshold (°C)
+      name: Temperature threshold (°C)
       default: 2.0
       selector:
         number:
@@ -49,7 +49,7 @@ blueprint:
           unit_of_measurement: °C
 
     humidity_threshold:
-      name: Humidity change threshold (%)
+      name: Humidity threshold (%)
       default: 10
       selector:
         number:
@@ -73,8 +73,7 @@ blueprint:
         action: {}
 
     language:
-      name: Notification language
-      description: Choose language for notifications.
+      name: Language
       default: en
       selector:
         select:
@@ -121,7 +120,7 @@ action:
             num_helper: "input_number.prev_{{ entity|replace('.', '_') }}"
             time_helper: "input_datetime.prev_{{ entity|replace('.', '_') }}_time"
 
-        # Auto-create helpers if they don't exist
+        # Create helpers if they do not exist
         - choose:
             - conditions: "{{ num_helper not in states }}"
               sequence:
@@ -136,12 +135,14 @@ action:
                     entity_id: "{{ time_helper }}"
                     timestamp: "{{ now_ts }}"
 
+        # Compute previous value, time, diff
         - variables:
             prev_val: "{{ states(num_helper) | float(0) }}"
             prev_time: "{{ as_timestamp(states(time_helper)) if states(time_helper) not in ['unknown','unavailable',None] else 0 }}"
             minutes_since: "{{ (now_ts - prev_time)/60 if prev_time > 0 else lookback_minutes + 1 }}"
             diff: "{{ current - prev_val }}"
 
+        # Check if threshold exceeded
         - choose:
             - conditions: >
                 {{ minutes_since >= lookback_minutes and
@@ -183,4 +184,9 @@ action:
               for_each: !input notify_actions
               sequence:
                 - service: "{{ repeat.item.service }}"
-                  data: "{{ repeat.item.data if repeat.item.data is defined else {'message': message} }}"
+                  data: >-
+                    {% if repeat.item.data is defined %}
+                      {{ repeat.item.data | combine({'message': message}) }}
+                    {% else %}
+                      {'message': message}
+                    {% endif %}
