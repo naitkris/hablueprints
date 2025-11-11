@@ -17,6 +17,7 @@ blueprint:
 
     You can also choose any temperature or humidity sensors that should be ignored
     by this automation.
+  domain: automation
   input:
     monitor_temperature:
       name: Monitor temperature sensors
