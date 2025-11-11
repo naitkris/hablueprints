@@ -1,13 +1,18 @@
 blueprint:
   name: Significant Temperature and Humidity Changes
   description: >
+    # ↕️ Significant Temperature and Humidity Changes
+    
+    **Version: 1.0**
+    
     Monitors all temperature and humidity sensors and triggers an alert when any
     of them changes significantly (increase or decrease) within a configurable
     time period. Useful for detecting sudden environmental changes, device
     malfunctions, open doors/windows, or to act as a heat alarm.
-    You can exclude specific sensors via the ignore list.
+
+    You can also choose any temperature or humidity sensors that should be ignored
+    by this automation.
   domain: automation
-  author: ChatGPT / naitkris
   input:
     monitored_types:
       name: Sensor types to monitor
