@@ -14,7 +14,6 @@ blueprint:
 
     You can also choose any temperature or humidity sensors that should be ignored
     by this automation.
-  domain: automation
 
   input:
     monitor_temperature:
@@ -65,15 +64,8 @@ blueprint:
         entity:
           multiple: true
 
-    notification_target:
-      name: Notification Target
-      description: Optional notification service to send alerts.
-      default: []
-      selector:
-        action: {}
-
     other_action:
-      name: Additional Action
+      name: Optional additional action
       description: Optional Home Assistant action to perform when a change is detected.
       default: []
       selector:
@@ -142,27 +134,17 @@ action:
             entity_id: "{{ time_helper }}"
             timestamp: "{{ now_ts }}"
 
-  # Execute optional actions if changes detected
+  # Send preconfigured notification if any changes detected
   - choose:
       - conditions: "{{ changes | count > 0 }}"
         sequence:
           - variables:
               message: "{{ '\n'.join(changes) }}"
-          # Notification action
-          - choose:
-              - conditions: "{{ notification_target | length > 0 }}"
-                sequence:
-                  - repeat:
-                      for_each: !input notification_target
-                      sequence:
-                        - service: "{{ repeat.item.service }}"
-                          data: >
-                            {% if repeat.item.data is defined %}
-                              {{ repeat.item.data | combine({'message': message}) }}
-                            {% else %}
-                              {'message': message}
-                            {% endif %}
-          # Additional Home Assistant action
+          # Preconfigured notification
+          - service: notify.mobile_app_yourdevice
+            data:
+              message: "{{ message }}"
+          # Optional additional actions
           - choose:
               - conditions: "{{ other_action | length > 0 }}"
                 sequence:
