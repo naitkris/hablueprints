@@ -65,13 +65,12 @@ blueprint:
         entity:
           multiple: true
 
-    notify_services:
-      name: Notification services
-      description: Select one or more services to send alerts to.
+    notify_actions:
+      name: Notification actions
+      description: Select one or more notification actions to send alerts.
       default: []
       selector:
-        action:
-          multiple: true
+        action: {}
 
     language:
       name: Notification language
@@ -117,12 +116,12 @@ action:
         - condition: template
           value_template: "{{ (is_temp or is_hum) and repeat.item.state not in ['unknown','unavailable'] }}"
 
-        # Helpers
+        # Define helpers
         - variables:
             num_helper: "input_number.prev_{{ entity|replace('.', '_') }}"
             time_helper: "input_datetime.prev_{{ entity|replace('.', '_') }}_time"
 
-        # Auto-create helpers
+        # Auto-create helpers if they don't exist
         - choose:
             - conditions: "{{ num_helper not in states }}"
               sequence:
@@ -130,18 +129,12 @@ action:
                   data:
                     entity_id: "{{ num_helper }}"
                     value: "{{ current }}"
-                - service: homeassistant.update_entity
-                  target:
-                    entity_id: "{{ num_helper }}"
             - conditions: "{{ time_helper not in states }}"
               sequence:
                 - service: input_datetime.set_datetime
                   data:
                     entity_id: "{{ time_helper }}"
                     timestamp: "{{ now_ts }}"
-                - service: homeassistant.update_entity
-                  target:
-                    entity_id: "{{ time_helper }}"
 
         - variables:
             prev_val: "{{ states(num_helper) | float(0) }}"
@@ -180,16 +173,14 @@ action:
             entity_id: "{{ time_helper }}"
             timestamp: "{{ now_ts }}"
 
-  # Send notifications to all selected services
+  # Send notifications
   - choose:
       - conditions: "{{ changes | count > 0 }}"
         sequence:
           - variables:
               message: "{{ '\n'.join(changes) }}"
           - repeat:
-              for_each: !input notify_services
+              for_each: !input notify_actions
               sequence:
                 - service: "{{ repeat.item.service }}"
-                  data:
-                    message: "{{ message }}"
-                    target: "{{ repeat.item.target if repeat.item.target is defined else none }}"
+                  data: "{{ repeat.item.data if repeat.item.data is defined else {'message': message} }}"
