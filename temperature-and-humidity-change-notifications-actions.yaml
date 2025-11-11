@@ -14,6 +14,7 @@ blueprint:
 
     You can also choose any temperature or humidity sensors that should be ignored
     by this automation.
+  domain: automation
 
   input:
     monitor_temperature:
@@ -98,43 +99,23 @@ action:
             device_class: "{{ repeat.item.attributes.device_class | default('') }}"
             is_temp: "{{ monitor_temperature and (device_class=='temperature' or 'temperature' in entity) }}"
             is_hum: "{{ monitor_humidity and (device_class=='humidity' or 'humidity' in entity) }}"
-
-        - condition: template
-          value_template: "{{ (is_temp or is_hum) and repeat.item.state not in ['unknown','unavailable'] }}"
-
-        # Pre-created helpers
-        - variables:
-            num_helper: "input_number.prev_{{ entity|replace('.', '_') }}"
-            time_helper: "input_datetime.prev_{{ entity|replace('.', '_') }}_time"
-
-        - variables:
-            prev_val: "{{ states(num_helper) | float(0) }}"
-            prev_time: "{{ as_timestamp(states(time_helper)) if states(time_helper) not in ['unknown','unavailable',None] else 0 }}"
-            minutes_since: "{{ (now_ts - prev_time)/60 if prev_time>0 else lookback_minutes + 1 }}"
+            # Use previous state stored in automation's last_triggered
+            prev_val: "{{ state_attr(entity,'last_changed') and states(entity)|float(0) or current }}"
+            prev_time: "{{ as_timestamp(repeat.item.last_changed) if repeat.item.last_changed else now_ts }}"
+            minutes_since: "{{ (now_ts - prev_time)/60 }}"
             diff: "{{ current - prev_val }}"
 
-        - choose:
-            - conditions: >
-                {{ minutes_since >= lookback_minutes and
-                  ((is_temp and (diff|abs >= temp_threshold)) or
-                   (is_hum and (diff|abs >= humidity_threshold))) }}
-              sequence:
-                - variables:
-                    msg: "⚠️ {{ name }} changed by {{ diff | round(1) }}{{ '°C' if is_temp else '%' }} in last {{ minutes_since | int }} minutes"
-                - variables:
-                    changes: "{{ changes + [msg] }}"
+        - condition: template
+          value_template: >
+            {{ (is_temp or is_hum)
+               and minutes_since >= lookback_minutes
+               and ((is_temp and diff|abs >= temp_threshold) or (is_hum and diff|abs >= humidity_threshold)) }}
 
-        # Update helpers
-        - service: input_number.set_value
-          data:
-            entity_id: "{{ num_helper }}"
-            value: "{{ current }}"
-        - service: input_datetime.set_datetime
-          data:
-            entity_id: "{{ time_helper }}"
-            timestamp: "{{ now_ts }}"
+        - variables:
+            msg: "⚠️ {{ name }} changed by {{ diff|round(1) }}{{ '°C' if is_temp else '%' }} in last {{ minutes_since|int }} minutes"
+            changes: "{{ changes + [msg] }}"
 
-  # Send preconfigured notification if any changes detected
+  # Send preconfigured notification if changes detected
   - choose:
       - conditions: "{{ changes | count > 0 }}"
         sequence:
