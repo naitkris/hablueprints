@@ -18,6 +18,7 @@ blueprint:
     You can also choose any temperature or humidity sensors that should be ignored
     by this automation.
   domain: automation
+
   input:
     monitor_temperature:
       name: Monitor temperature sensors
@@ -31,9 +32,10 @@ blueprint:
       selector:
         boolean:
 
-    time_window:
-      name: Time window (minutes)
-      description: Compare readings separated by this time interval.
+    lookback_minutes:
+      name: Comparison lookback (minutes)
+      description: >
+        Compare the current value to this many minutes ago. Defines the time window for detecting significant changes.
       default: 10
       selector:
         number:
@@ -69,19 +71,14 @@ blueprint:
         entity:
           multiple: true
 
-    notify_service:
-      name: Notification service (optional)
-      description: Example notify.mobile_app_phone
-      default: ""
+    actions:
+      name: Actions
+      description: >
+        What to do when a significant temperature or humidity change is detected.
+        (e.g. send a notification, play sound, flash lights, run script, etc.)
+      default: []
       selector:
-        text:
-
-    tts_service:
-      name: TTS or media player service (optional)
-      description: Example tts.google_translate_say or media_player.living_room
-      default: ""
-      selector:
-        text:
+        action:
 
 mode: queued
 max_exceeded: silent
@@ -89,88 +86,97 @@ max_exceeded: silent
 variables:
   monitor_temperature: !input monitor_temperature
   monitor_humidity: !input monitor_humidity
-  time_window: !input time_window
+  lookback_minutes: !input lookback_minutes
   temp_threshold: !input temp_threshold
   humidity_threshold: !input humidity_threshold
   ignore_entities: !input ignore_entities
-  notify_service: !input notify_service
-  tts_service: !input tts_service
 
 trigger:
+  # Run every minute to check for changes
   - platform: time_pattern
-    minutes: "/5"  # checks every 5 minutes (configurable)
+    minutes: "/1"
 
 action:
   - variables:
-      changed: []
+      now_ts: "{{ as_timestamp(now()) }}"
+      changes: []
 
   - repeat:
       for_each: >
-        {{ states | selectattr('domain', 'equalto', 'sensor') | list }}
+        {{ states.sensor | list }}
       sequence:
         - variables:
             entity: "{{ repeat.item.entity_id }}"
             name: "{{ repeat.item.name }}"
-            state: "{{ repeat.item.state | float(0) }}"
-            class: "{{ repeat.item.attributes.device_class | default('') }}"
+            current: "{{ repeat.item.state | float(0) }}"
+            device_class: "{{ repeat.item.attributes.device_class | default('') }}"
             is_temp: >
-              {{ monitor_temperature and (class == 'temperature' or 'temperature' in entity) }}
+              {{ monitor_temperature and (device_class == 'temperature' or 'temperature' in entity) }}
             is_hum: >
-              {{ monitor_humidity and (class == 'humidity' or 'humidity' in entity) }}
-
+              {{ monitor_humidity and (device_class == 'humidity' or 'humidity' in entity) }}
         - condition: template
           value_template: >
-            {{ (is_temp or is_hum) and entity not in ignore_entities }}
+            {{ (is_temp or is_hum) and entity not in ignore_entities and repeat.item.state not in ['unknown', 'unavailable'] }}
 
+        # Store previous reading using an input_number and input_datetime per entity
         - variables:
-            helper_id: "input_number.last_{{ entity|replace('.', '_') }}"
+            num_helper: "input_number.prev_{{ entity|replace('.', '_') }}"
+            time_helper: "input_datetime.prev_{{ entity|replace('.', '_') }}"
 
+        # Create helpers if they don’t exist yet
         - choose:
-            - conditions: "{{ helper_id not in states }}"
+            - conditions: "{{ num_helper not in states }}"
               sequence:
                 - service: input_number.create
                   data:
-                    name: "Last {{ name }}"
+                    name: "Previous {{ name }}"
                     min: -100
                     max: 200
                     step: 0.01
-                    initial: "{{ state }}"
-                    id: "{{ helper_id }}"
+                    initial: "{{ current }}"
+                    id: "{{ num_helper }}"
+            - conditions: "{{ time_helper not in states }}"
+              sequence:
+                - service: input_datetime.create
+                  data:
+                    name: "Previous {{ name }} time"
+                    has_date: true
+                    has_time: true
+                    id: "{{ time_helper }}"
 
         - variables:
-            previous: "{{ states(helper_id) | float(0) }}"
-            diff: "{{ state - previous }}"
-
+            prev_val: "{{ states(num_helper) | float(0) }}"
+            prev_time: "{{ as_timestamp(states(time_helper)) if states(time_helper) not in ['unknown', 'unavailable', None] else 0 }}"
+            minutes_since: "{{ (now_ts - prev_time) / 60 if prev_time > 0 else lookback_minutes + 1 }}"
+            diff: "{{ current - prev_val }}"
         - choose:
             - conditions: >
-                {{ (is_temp and (diff | abs >= temp_threshold)) 
-                   or (is_hum and (diff | abs >= humidity_threshold)) }}
+                {{ minutes_since >= lookback_minutes and
+                   ((is_temp and (diff | abs >= temp_threshold))
+                    or (is_hum and (diff | abs >= humidity_threshold))) }}
               sequence:
                 - variables:
-                    change_msg: >
-                      {{ '⚠️ ' ~ name ~ ': ' ~ diff|round(1) ~ ('°C' if is_temp else '%') }}
+                    msg: >
+                      {{ '⚠️ ' ~ name ~ ' changed by ' ~ diff|round(1) ~ ('°C' if is_temp else '%') ~ ' in ' ~ (minutes_since|int) ~ ' min' }}
                 - variables:
-                    changed: "{{ changed + [change_msg] }}"
+                    changes: "{{ changes + [msg] }}"
 
+        # Always update last known state
         - service: input_number.set_value
           data:
-            entity_id: "{{ helper_id }}"
-            value: "{{ state }}"
+            entity_id: "{{ num_helper }}"
+            value: "{{ current }}"
+        - service: input_datetime.set_datetime
+          data:
+            entity_id: "{{ time_helper }}"
+            timestamp: "{{ now_ts }}"
 
   - choose:
-      - conditions: "{{ changed | count > 0 }}"
+      - conditions: "{{ changes | count > 0 }}"
         sequence:
           - variables:
               message: >
-                Significant change detected in:
-                {{ changed | join(', ') }}
-          - if: "{{ notify_service != '' }}"
-            then:
-              - service: "{{ notify_service }}"
-                data:
-                  message: "{{ message }}"
-          - if: "{{ tts_service != '' }}"
-            then:
-              - service: "{{ tts_service }}"
-                data:
-                  message: "{{ message }}"
+                Significant temperature or humidity change detected:
+                {{ '\n'.join(changes) }}
+          - choose: []
+            default: !input actions
