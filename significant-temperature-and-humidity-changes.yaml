@@ -4,7 +4,8 @@ blueprint:
     Monitors all temperature and humidity sensors and triggers an alert when any
     of them changes significantly (increase or decrease) within a configurable
     time period. Useful for detecting sudden environmental changes, device
-    malfunctions, or open windows.
+    malfunctions, open doors/windows, or to act as a heat alarm.
+    You can exclude specific sensors via the ignore list.
   domain: automation
   author: ChatGPT / naitkris
   input:
@@ -33,7 +34,8 @@ blueprint:
 
     temp_threshold:
       name: Temperature change threshold (°C)
-      description: The absolute change in temperature that must occur to trigger an alert.
+      description: >
+        The amount of temperature change required to trigger an alert.
       default: 2
       selector:
         number:
@@ -44,7 +46,8 @@ blueprint:
 
     humidity_threshold:
       name: Humidity change threshold (%)
-      description: The absolute change in humidity that must occur to trigger an alert.
+      description: >
+        The amount of humidity change required to trigger an alert.
       default: 5
       selector:
         number:
@@ -55,7 +58,8 @@ blueprint:
 
     time_window:
       name: Time window (minutes)
-      description: How far back to look for comparison when detecting change.
+      description: >
+        How far back to look when comparing readings.
       default: 5
       selector:
         number:
@@ -66,7 +70,8 @@ blueprint:
 
     cooldown:
       name: Minimum time between alerts (minutes)
-      description: Prevents repeated alerts for the same sensor in a short time.
+      description: >
+        Prevents repeated alerts for the same sensor in a short time.
       default: 30
       selector:
         number:
@@ -75,11 +80,20 @@ blueprint:
           step: 1
           unit_of_measurement: minutes
 
+    ignore_entities:
+      name: Sensors to ignore
+      description: >
+        Choose any temperature or humidity sensors that should be ignored by this automation.
+      default: []
+      selector:
+        entity:
+          domain: sensor
+          multiple: true
+
     notify_action:
       name: Action to perform when triggered
       description: >
-        Action(s) to perform when a significant change is detected — e.g.
-        notification, light flash, sound, etc.
+        What to do when a significant change is detected (send a notification, play a sound, etc.).
       default: []
       selector:
         action: {}
@@ -104,8 +118,13 @@ variables:
   humidity_threshold: !input humidity_threshold
   time_window: !input time_window
   cooldown: !input cooldown
+  ignore_entities: !input ignore_entities
 
 condition:
+  # Ignore sensors listed in ignore_entities
+  - condition: template
+    value_template: "{{ trigger.entity_id not in ignore_entities }}"
+  # Only continue for the monitored sensor types
   - condition: template
     value_template: >
       {% set cls = state_attr(trigger.entity_id, 'device_class') %}
@@ -116,51 +135,9 @@ action:
       entity_id: "{{ trigger.entity_id }}"
       device_class: "{{ state_attr(entity_id, 'device_class') }}"
       now_val: "{{ states(entity_id) | float(0) }}"
-      past_val: >
-        {% set hist = state_attr(entity_id, 'history') %}
-        {% if hist is not none %}
-          {% set start = (now() - timedelta(minutes=time_window)).timestamp() %}
-          {% set values = namespace(found=None) %}
-          {% for s in hist %}
-            {% if s.last_changed.timestamp() < start %}
-              {% set values.found = s.state %}
-            {% endif %}
-          {% endfor %}
-          {{ values.found | float(0) }}
-        {% else %}
-          {{ state_attr(entity_id, 'old_state') | float(0) }}
-        {% endif %}
-      diff: "{{ now_val - past_val }}"
-      abs_diff: "{{ (now_val - past_val) | abs }}"
-
-  - condition: template
-    value_template: >
-      {% if device_class == 'temperature' %}
-        {% set threshold = temp_threshold %}
-      {% elif device_class == 'humidity' %}
-        {% set threshold = humidity_threshold %}
-      {% else %}
-        {% set threshold = 9999 %}
-      {% endif %}
-
-      {% if change_direction == 'increase' %}
-        {{ diff > threshold }}
-      {% elif change_direction == 'decrease' %}
-        {{ diff < (0 - threshold) }}
-      {% else %}
-        {{ abs_diff > threshold }}
-      {% endif %}
-
-  - condition: template
-    value_template: >
-      {% set last = state_attr(this.entity_id, 'last_triggered') %}
-      {{ (now() - (last or now() - timedelta(minutes=cooldown))).total_seconds() / 60 > cooldown }}
-
-  - variables:
-      direction_text: >
-        {% if diff > 0 %}increased{% else %}decreased{% endif %}
-      amount: "{{ abs_diff | round(2) }}"
-      unit: "{{ '°C' if device_class == 'temperature' else '%' }}"
-  - choose:
-      - conditions: []
-        sequence: !input notify_action
+      old_val: "{{ trigger.from_state.state | float(0) }}"
+      diff: "{{ now_val - old_val }}"
+      abs_diff: "{{ (now_val - old_val) | abs }}"
+      threshold: >
+        {% if device_class == 'temperature' %}
+          {{ temp_threshold }}
