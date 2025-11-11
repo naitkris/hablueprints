@@ -65,25 +65,11 @@ blueprint:
         entity:
           multiple: true
 
-    notify_actions:
-      name: Notification actions
-      description: Select one or more notification actions to send alerts.
-      default: []
+    notification_target:
+      name: Notification Target
+      description: The notify service to send alerts to.
       selector:
-        action: {}
-
-    language:
-      name: Language
-      default: en
-      selector:
-        select:
-          options:
-            - label: English
-              value: en
-            - label: Swedish
-              value: sv
-            - label: Polish
-              value: pl
+        target:
 
 mode: queued
 max_exceeded: silent
@@ -97,6 +83,7 @@ action:
       now_ts: "{{ as_timestamp(now()) }}"
       changes: []
 
+  # Loop through all sensors
   - repeat:
       for_each: >
         {{ states.sensor
@@ -115,34 +102,17 @@ action:
         - condition: template
           value_template: "{{ (is_temp or is_hum) and repeat.item.state not in ['unknown','unavailable'] }}"
 
-        # Define helpers
+        # Pre-created helpers
         - variables:
             num_helper: "input_number.prev_{{ entity|replace('.', '_') }}"
             time_helper: "input_datetime.prev_{{ entity|replace('.', '_') }}_time"
 
-        # Create helpers if they do not exist
-        - choose:
-            - conditions: "{{ num_helper not in states }}"
-              sequence:
-                - service: input_number.set_value
-                  data:
-                    entity_id: "{{ num_helper }}"
-                    value: "{{ current }}"
-            - conditions: "{{ time_helper not in states }}"
-              sequence:
-                - service: input_datetime.set_datetime
-                  data:
-                    entity_id: "{{ time_helper }}"
-                    timestamp: "{{ now_ts }}"
-
-        # Compute previous value, time, diff
         - variables:
             prev_val: "{{ states(num_helper) | float(0) }}"
             prev_time: "{{ as_timestamp(states(time_helper)) if states(time_helper) not in ['unknown','unavailable',None] else 0 }}"
-            minutes_since: "{{ (now_ts - prev_time)/60 if prev_time > 0 else lookback_minutes + 1 }}"
+            minutes_since: "{{ (now_ts - prev_time)/60 if prev_time>0 else lookback_minutes + 1 }}"
             diff: "{{ current - prev_val }}"
 
-        # Check if threshold exceeded
         - choose:
             - conditions: >
                 {{ minutes_since >= lookback_minutes and
@@ -150,17 +120,7 @@ action:
                    (is_hum and (diff|abs >= humidity_threshold))) }}
               sequence:
                 - variables:
-                    msg_en: "⚠️ {{ name }} changed by {{ diff|round(1) }}{{ '°C' if is_temp else '%' }} in last {{ minutes_since|int }} minutes"
-                    msg_sv: "⚠️ {{ name }} ändrades med {{ diff|round(1) }}{{ '°C' if is_temp else '%' }} under de senaste {{ minutes_since|int }} minuterna"
-                    msg_pl: "⚠️ {{ name }} zmienił się o {{ diff|round(1) }}{{ '°C' if is_temp else '%' }} w ciągu {{ minutes_since|int }} minut"
-                    msg: >
-                      {% if language == 'sv' %}
-                        {{ msg_sv }}
-                      {% elif language == 'pl' %}
-                        {{ msg_pl }}
-                      {% else %}
-                        {{ msg_en }}
-                      {% endif %}
+                    msg: "⚠️ {{ name }} changed by {{ diff | round(1) }}{{ '°C' if is_temp else '%' }} in last {{ minutes_since | int }} minutes"
                 - variables:
                     changes: "{{ changes + [msg] }}"
 
@@ -174,19 +134,12 @@ action:
             entity_id: "{{ time_helper }}"
             timestamp: "{{ now_ts }}"
 
-  # Send notifications
+  # Send notification if any changes detected
   - choose:
       - conditions: "{{ changes | count > 0 }}"
         sequence:
-          - variables:
-              message: "{{ '\n'.join(changes) }}"
-          - repeat:
-              for_each: !input notify_actions
-              sequence:
-                - service: "{{ repeat.item.service }}"
-                  data: >-
-                    {% if repeat.item.data is defined %}
-                      {{ repeat.item.data | combine({'message': message}) }}
-                    {% else %}
-                      {'message': message}
-                    {% endif %}
+          - service: notify.mobile_app_yourdevice
+            data:
+              message: >
+                Significant temperature/humidity changes detected:
+                {{ '\n'.join(changes) }}
